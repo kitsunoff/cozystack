@@ -1,8 +1,67 @@
 # CozyIDP Architecture Notes
 
-## Core Principle: Lightweight, Kubernetes-native
+## Core Principle: Simple as Fuck
 
-No heavy portals. No React apps with plugin ecosystems. Just Kubernetes CRDs + CLI + existing Cozystack Dashboard.
+**CozyIDP must not become another Backstage.**
+
+No heavy portals. No React apps with plugin ecosystems. No 500MB node_modules. No "platform team required to maintain". No cognitive overload.
+
+### Design Philosophy
+
+```
+Backstage:     "Here's a framework, build your own portal"
+                → 6 months later, 3 engineers maintaining it
+                → Nobody understands how it works
+                → Upgrade = pain
+
+CozyIDP:       "Here's your app running"
+                → 5 minutes to deploy
+                → Zero maintenance
+                → Just works
+```
+
+### Simplicity Rules
+
+1. **If it needs a manual, it's too complex**
+2. **If it needs a dedicated team, it's too complex**
+3. **If developer asks "how do I...", we failed**
+4. **Convention over configuration, always**
+5. **Zero YAML is better than minimal YAML**
+
+### What "Simple" Means
+
+| Aspect | Complex (avoid) | Simple (goal) |
+|--------|-----------------|---------------|
+| **Install** | Helm + values + secrets + config | `kubectl apply` one manifest |
+| **First app** | Read docs, write YAML, configure CI | `cozy init && git push` |
+| **Add database** | Create CRD, configure operator, inject secrets | `cozy add postgres` |
+| **View logs** | Find pod name, kubectl logs, grep | `cozy logs` |
+| **Check status** | Dashboard → namespace → deployment → pods | `cozy status` |
+
+### Anti-Patterns to Avoid
+
+- ❌ Plugin systems
+- ❌ Template languages (except Go templates for secrets)
+- ❌ Custom DSLs
+- ❌ "Extensibility frameworks"
+- ❌ Multiple ways to do the same thing
+- ❌ Configuration options that nobody uses
+- ❌ Abstractions on top of abstractions
+
+### Success Criteria
+
+**Junior developer with zero Kubernetes knowledge should:**
+1. Deploy first app in < 10 minutes
+2. Add PostgreSQL in < 1 minute
+3. Never see a Kubernetes manifest
+4. Never ask "what namespace is my app in"
+5. Never debug YAML indentation
+
+---
+
+## Architecture: Kubernetes-native, Zero Bloat
+
+Just Kubernetes CRDs + CLI + existing Cozystack Dashboard.
 
 ---
 
