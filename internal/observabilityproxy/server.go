@@ -25,6 +25,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -46,6 +47,7 @@ type Config struct {
 	// means the in-cluster Service of the "generic" logs storage.
 	UpstreamURL     func(store string) string
 	Logs            LogsLimits
+	Metrics         MetricsConfig
 	Limiter         LimiterConfig
 	RequestTimeout  time.Duration
 	TailIdleTimeout time.Duration
@@ -72,6 +74,12 @@ func NewServer(cfg Config, auth *Authorizer, stores StoreLookup, reg prometheus.
 		domain := cfg.ClusterDomain
 		cfg.UpstreamURL = func(store string) string {
 			return fmt.Sprintf("http://vlselect-generic.%s.svc.%s:9471", store, domain)
+		}
+	}
+	if cfg.Metrics.UpstreamURL == nil {
+		domain, root := cfg.ClusterDomain, cfg.Metrics.RootTenant
+		cfg.Metrics.UpstreamURL = func(store string) string {
+			return fmt.Sprintf("http://vmselect-%s.%s.svc.%s:8481/select/0/prometheus", store, root, domain)
 		}
 	}
 	s := &Server{
@@ -140,7 +148,7 @@ func writeError(w http.ResponseWriter, e *HTTPError) {
 // serve answers an unimplemented root before authenticating, so later
 // waves only add a case here.
 func (s *Server) serve(w http.ResponseWriter, r *http.Request, route Route) *HTTPError {
-	if route.Kind != NamespaceLogs {
+	if route.Kind != NamespaceLogs && route.Kind != NamespaceMetrics {
 		return errorf(http.StatusNotFound, "not found")
 	}
 	user, herr := s.authorize(r, route)
@@ -154,6 +162,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, route Route) *HTT
 	if wait, ok := s.limits.allowRate(user); !ok {
 		w.Header().Set("Retry-After", strconv.FormatInt(int64(math.Ceil(wait.Seconds())), 10))
 		return errorf(http.StatusTooManyRequests, "request rate limit exceeded")
+	}
+	if route.Kind == NamespaceMetrics {
+		return s.serveMetrics(w, r, route, user)
 	}
 	endpoint, ok := strings.CutPrefix(route.Endpoint, "select/logsql/")
 	if !ok {
@@ -191,24 +202,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, route Route) *HTT
 		ctx, cancel = context.WithTimeout(ctx, s.cfg.RequestTimeout)
 		defer cancel()
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		s.cfg.UpstreamURL(store)+"/select/logsql/"+endpoint, strings.NewReader(params.Encode()))
-	if err != nil {
-		return errorf(http.StatusInternalServerError, "building upstream request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("AccountID", "0")
-	req.Header.Set("ProjectID", "0")
-	resp, err := s.client.Do(req)
-	switch {
-	case err == nil:
-	case r.Context().Err() != nil:
-		return errorf(http.StatusBadGateway, "client went away")
-	case errors.Is(err, context.DeadlineExceeded):
-		return errorf(http.StatusGatewayTimeout, "log store did not answer within %s", s.cfg.RequestTimeout)
-	default:
-		slog.Warn("log store unreachable", "store", store, "error", err)
-		return errorf(http.StatusBadGateway, "log store unreachable")
+	tenant := http.Header{}
+	tenant.Set("AccountID", "0")
+	tenant.Set("ProjectID", "0")
+	resp, herr := s.post(ctx, r, s.cfg.UpstreamURL(store)+"/select/logsql/"+endpoint, params, "log store", tenant)
+	if herr != nil {
+		return herr
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -226,6 +225,70 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, route Route) *HTT
 		slog.Debug("copying upstream response", "error", err)
 	}
 	return nil
+}
+
+func (s *Server) serveMetrics(w http.ResponseWriter, r *http.Request, route Route, user string) *HTTPError {
+	r.Body = http.MaxBytesReader(w, r.Body, maxFormBytes)
+	if err := r.ParseForm(); err != nil {
+		return errorf(http.StatusBadRequest, "invalid form: %v", err)
+	}
+	now := s.now()
+	req, herr := BuildMetricsParams(route.Endpoint, r.Form, route.Namespace, now, s.cfg.Metrics.Limits)
+	if herr != nil {
+		return herr
+	}
+	release, ok := s.limits.acquire(user)
+	if !ok {
+		return errorf(http.StatusUnprocessableEntity, "too many concurrent requests")
+	}
+	defer release()
+
+	ctx := r.Context()
+	if s.cfg.RequestTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, s.cfg.RequestTimeout)
+		defer cancel()
+	}
+	store := s.cfg.Metrics.store(req.start, now)
+	resp, herr := s.post(ctx, r, s.cfg.Metrics.UpstreamURL(store)+"/"+req.path, req.params, "metrics store", nil)
+	if herr != nil {
+		return herr
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if ct := resp.Header.Get("Content-Type"); ct != "" {
+		w.Header().Set("Content-Type", ct)
+	}
+	w.WriteHeader(resp.StatusCode)
+	if _, err := io.Copy(w, resp.Body); err != nil && !errors.Is(err, context.Canceled) {
+		slog.Debug("copying upstream response", "error", err)
+	}
+	return nil
+}
+
+// post sends params as a form with only the given headers, so nothing the
+// client sent reaches the store, and tells an unreachable store (502) from
+// one that missed the deadline (504).
+func (s *Server) post(ctx context.Context, r *http.Request, target string, params url.Values, what string, header http.Header) (*http.Response, *HTTPError) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(params.Encode()))
+	if err != nil {
+		return nil, errorf(http.StatusInternalServerError, "building upstream request: %v", err)
+	}
+	for k, v := range header {
+		req.Header[k] = v
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := s.client.Do(req)
+	switch {
+	case err == nil:
+		return resp, nil
+	case r.Context().Err() != nil:
+		return nil, errorf(http.StatusBadGateway, "client went away")
+	case errors.Is(err, context.DeadlineExceeded):
+		return nil, errorf(http.StatusGatewayTimeout, "%s did not answer within %s", what, s.cfg.RequestTimeout)
+	default:
+		slog.Warn(what+" unreachable", "url", target, "error", err)
+		return nil, errorf(http.StatusBadGateway, "%s unreachable", what)
+	}
 }
 
 func (s *Server) authorize(r *http.Request, route Route) (string, *HTTPError) {
