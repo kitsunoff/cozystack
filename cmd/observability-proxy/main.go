@@ -93,6 +93,9 @@ func parseFlags(args []string) (options, error) {
 	fs.DurationVar(&o.metrics.Limits.MaxRange, "metrics-max-range", 30*24*time.Hour, "longest [start, end] and step a metrics request may use")
 	fs.IntVar(&o.metrics.Limits.MaxPoints, "metrics-max-points", 11000, "most points per series a range query may return")
 	fs.DurationVar(&o.metrics.Limits.MaxTimeout, "metrics-max-timeout", 30*time.Second, "timeout forwarded to vmselect; a longer client timeout is clamped")
+	fs.DurationVar(&o.metrics.App.Lookback, "metrics-app-lookback", 24*time.Hour, "how far before the window the application root looks up the application's pods and PVCs at most")
+	fs.IntVar(&o.metrics.App.MaxPods, "metrics-app-max-pods", 500, "most pods of one application in the lookup window; more answer 422")
+	fs.IntVar(&o.metrics.App.MaxPVCs, "metrics-app-max-pvcs", 500, "most PVCs of one application in the lookup window; more answer 422")
 	fs.IntVar(&o.limiter.MaxConcurrentPerUser, "max-concurrent-per-user", 10, "concurrent non-tail requests per user; 0 disables")
 	fs.Float64Var(&o.limiter.RatePerUser, "rate-limit-per-user", 10, "sustained requests per second per user; 0 disables")
 	fs.IntVar(&o.limiter.RateBurst, "rate-limit-burst", 20, "request burst per user")
@@ -127,6 +130,8 @@ func parseFlags(args []string) (options, error) {
 		return o, errors.New("--metrics-shortterm-retention, --metrics-max-range and --metrics-max-timeout must be positive")
 	case o.metrics.Limits.MaxPoints < 2:
 		return o, errors.New("--metrics-max-points must be at least 2")
+	case o.metrics.App.Lookback < 0 || o.metrics.App.MaxPods < 1 || o.metrics.App.MaxPVCs < 1:
+		return o, errors.New("--metrics-app-lookback must not be negative and --metrics-app-max-pods and --metrics-app-max-pvcs must be positive")
 	case o.logs.MaxTailResume < 0:
 		return o, errors.New("--logs-max-tail-resume must not be negative")
 	case o.requestTimeout < 0 || o.tailIdleTimeout < 0 || o.authCacheTTL < 0 || o.shutdownTimeout < 0:
