@@ -2,7 +2,7 @@
 # default keeps the chart renderable on its own, outside a cluster.
 _cluster: {}
 observabilityProxy:
-  image: "ghcr.io/kitsunoff/cozystack/observability-proxy:obs-dev10@sha256:cc2c7bfa63fcccfe92e6432721eea13696b0cdf9076f7d313c6e3357db7aea08"
+  image: "ghcr.io/kitsunoff/cozystack/observability-proxy:obs-dev10-r2@sha256:be83566fc0ca0f44dfb568b8a84ebf9d32cc31af6aa20b53ba0e2187d43440e7"
   replicas: 2
   rootTenant: tenant-root
   authCacheTTL: 10s
