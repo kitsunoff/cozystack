@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { useQueries } from "@tanstack/react-query"
 import { useK8sClient } from "@cozystack/k8s-client"
-import { Section, Spinner } from "@cozystack/ui"
+import { Section } from "@cozystack/ui"
 import {
   METRIC_PANELS,
   RANGES,
@@ -13,13 +13,18 @@ import { isScopeWide, metricsRoot, queryRange, type ObservabilityScope } from ".
 import { ProxyNotice } from "./ProxyNotice.tsx"
 import { TimeSeriesChart } from "./TimeSeriesChart.tsx"
 import { RangePicker } from "./RangePicker.tsx"
+import { EmptyState } from "./EmptyState.tsx"
 
 const REFRESH_MS = 60_000
+// The uPlot canvas plus its one-row legend, so a placeholder takes the chart's place without a jump.
+const CHART_SLOT = "h-[230px] rounded-md border border-dashed border-slate-200 bg-slate-50"
 
 export function MetricsView({ scope }: { scope: ObservabilityScope }) {
   const client = useK8sClient()
   const root = metricsRoot(scope)
   const [range, setRange] = useState<RangeKey>("1h")
+  const rangeKeys = Object.keys(RANGES) as RangeKey[]
+  const longestRange = range === rangeKeys[rangeKeys.length - 1]
 
   const results = useQueries({
     queries: METRIC_PANELS.map((panel) => ({
@@ -45,7 +50,7 @@ export function MetricsView({ scope }: { scope: ObservabilityScope }) {
     <div className="space-y-4 p-6">
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold text-slate-900">Resource consumption</h2>
-        <RangePicker options={Object.keys(RANGES) as RangeKey[]} value={range} onChange={setRange} />
+        <RangePicker options={rangeKeys} value={range} onChange={setRange} />
       </div>
       {wide ? (
         <ProxyNotice what="Metrics" error={wide} />
@@ -57,9 +62,9 @@ export function MetricsView({ scope }: { scope: ObservabilityScope }) {
               {error ? (
                 <ProxyNotice what="Metrics" error={error} />
               ) : isLoading || !data ? (
-                <Spinner />
+                <EmptyState busy title="Loading…" className={CHART_SLOT} />
               ) : data.series.length === 0 ? (
-                <p className="text-sm text-slate-500">No data for this range.</p>
+                <EmptyState title="No data for this range." hint={longestRange ? undefined : "Try a longer range."} className={CHART_SLOT} />
               ) : (
                 <TimeSeriesChart data={data} format={panel.format} />
               )}
