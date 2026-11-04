@@ -236,6 +236,9 @@ func TestServerRebuildsUpstreamRequest(t *testing.T) {
 		if r.headers.Get("AccountID") != "0" || r.headers.Get("ProjectID") != "0" {
 			t.Errorf("tenant headers = %q/%q, want 0/0", r.headers.Get("AccountID"), r.headers.Get("ProjectID"))
 		}
+		if ae := r.headers.Get("Accept-Encoding"); !strings.Contains(ae, "gzip") {
+			t.Errorf("upstream query Accept-Encoding = %q, want gzip outside tails", ae)
+		}
 		for _, k := range []string{"Authorization", "X-Forwarded-For", "Cookie"} {
 			if r.headers.Get(k) != "" {
 				t.Errorf("client header %s forwarded", k)
@@ -344,6 +347,59 @@ func TestServerTailFlushesEveryLine(t *testing.T) {
 	}
 	if r := h.requests()[0]; r.path != "/select/logsql/tail" || r.form.Get("start_offset") != "900000ms" {
 		t.Fatalf("tail upstream = %s %v, want start_offset capped at 15m", r.path, r.form)
+	}
+}
+
+// TestServerTailHeadersBeforeFirstLine mimics vlselect, which holds even the
+// response headers of a gzip-negotiated tail until the first line arrives.
+func TestServerTailHeadersBeforeFirstLine(t *testing.T) {
+	done := make(chan struct{})
+	h := newHarness(t, Config{TailIdleTimeout: time.Minute}, func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			select {
+			case <-done:
+			case <-r.Context().Done():
+			}
+			return
+		}
+		tailUpstream(nil, done)(w, r)
+	})
+	// Registered after the harness so it runs before the servers close and
+	// releases a held upstream when the assertion below fails.
+	t.Cleanup(func() { close(done) })
+
+	req, err := http.NewRequest(http.MethodGet, h.proxy.URL+logsRoot+"tail?query=*", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer good")
+	got := make(chan *http.Response, 1)
+	go func() {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			close(got)
+			return
+		}
+		got <- resp
+	}()
+	select {
+	case resp, ok := <-got:
+		if !ok {
+			t.Fatal("tail request failed")
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("tail response headers did not reach the client before the first line")
+	}
+	reqs := h.requests()
+	if len(reqs) != 1 {
+		t.Fatalf("upstream saw %d requests, want 1", len(reqs))
+	}
+	if ae := reqs[0].headers.Get("Accept-Encoding"); ae != "identity" {
+		t.Fatalf("upstream tail Accept-Encoding = %q, want identity", ae)
 	}
 }
 
