@@ -29,6 +29,22 @@ describe("ProxyNotice", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(text)
   })
 
+  it.each([
+    "the application has more than 50 pods in this window; use a shorter range",
+    "1200 points per series exceed the limit of 1000; raise step",
+  ])("does not add advice to a limit message that already carries its own: %s", (message) => {
+    render(<ProxyNotice what="Metrics" error={new ProxyError("limit", 422, message)} />)
+
+    expect(screen.getByRole("alert").textContent).toBe(`${message}.`)
+  })
+
+  it("still advises a shorter range for a store limit whose own advice is for operators", () => {
+    const message = "the number of matching timeseries exceeds 300000; either narrow down the search or increase -search.max* command-line flag values"
+    render(<ProxyNotice what="Metrics" error={new ProxyError("limit", 422, message)} />)
+
+    expect(screen.getByRole("alert").textContent).toBe(`${message}. Choose a shorter range.`)
+  })
+
   it("shows the server message for a rejected query", () => {
     render(<ProxyNotice what="Logs" error={new ProxyError("bad-request", 400, "cannot parse query")} />)
 
