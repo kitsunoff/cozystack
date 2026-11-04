@@ -24,6 +24,33 @@ spec:
 
   scrapeInterval: 30s
   selectAllByDefault: false
+  # The target always carries all three identity labels, "-" when the pod
+  # has no lineage ("-" is not a valid Kubernetes label value, so it never
+  # collides with a real one). Under honorLabels false every exporter-supplied
+  # copy then collides, is renamed to exported_* and dropped. Under
+  # honorLabels true the exporter's copy wins, so such a scrape must drop
+  # these labels itself. A scrape object's own relabel rules run after these
+  # and must leave the labels alone. The placeholder is removed before storage.
+  scrapeClasses:
+  - name: application-identity
+    default: true
+    relabelConfigs:
+    {{- range list "group" "kind" "name" }}
+    - targetLabel: apps_cozystack_io_application_{{ . }}
+      replacement: "-"
+    - sourceLabels: [__meta_kubernetes_pod_label_apps_cozystack_io_application_{{ . }}]
+      regex: (.+)
+      targetLabel: apps_cozystack_io_application_{{ . }}
+    {{- end }}
+    metricRelabelConfigs:
+    - action: labeldrop
+      regex: (exported_)+apps_cozystack_io_application_(group|kind|name)
+    {{- range list "group" "kind" "name" }}
+    - sourceLabels: [apps_cozystack_io_application_{{ . }}]
+      regex: "-"
+      targetLabel: apps_cozystack_io_application_{{ . }}
+      replacement: ""
+    {{- end }}
   {{- with .Values.vmagent.inlineScrapeConfig }}
   inlineScrapeConfig: |
     {{- . | nindent 4 }}
