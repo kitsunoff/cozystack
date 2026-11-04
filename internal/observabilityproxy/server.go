@@ -211,6 +211,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, route Route) *HTT
 	tenant := http.Header{}
 	tenant.Set("AccountID", "0")
 	tenant.Set("ProjectID", "0")
+	if tail {
+		// vlselect holds even the headers of a gzip-encoded tail until the
+		// first line; an explicit value stops the transport from asking for gzip.
+		tenant.Set("Accept-Encoding", "identity")
+	}
 	resp, herr := s.post(ctx, r, s.cfg.UpstreamURL(store)+"/select/logsql/"+endpoint, params, "log store", tenant)
 	if herr != nil {
 		return herr
